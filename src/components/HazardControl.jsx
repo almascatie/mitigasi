@@ -1,13 +1,1 @@
-import { useState } from "react";
-import { getHazards, setHazardVisibility } from "../map/hazards";
-
-export default function HazardControl({ map }) {
-  const [active, setActive] = useState({});
-  const hazards = getHazards();
-  function toggle(type) {
-    const next = !active[type];
-    setHazardVisibility(map, type, next);
-    setActive((current) => ({ ...current, [type]: next }));
-  }
-  return <div className="hazard-control"><div className="control-title">DATA BENCANA</div>{Object.entries(hazards).map(([type, item]) => <button key={type} className={active[type] ? "active" : ""} onClick={() => toggle(type)}><i style={{ background: item.color }} /><span>{item.label}</span>{active[type] && <b>✓</b>}</button>)}</div>;
-}
+export default function HazardControl({ layers, active, onToggle }) { const groups = layers.reduce((all, layer) => ({ ...all, [layer.group]: [...(all[layer.group] || []), layer] }), {}); return <section><span className="eyebrow">LAYER RESMI</span><h2>BNPB / InaRISK</h2><p>Data eksternal resmi; dimuat hanya saat diaktifkan.</p>{Object.entries(groups).map(([group, entries]) => <div className="layer-group" key={group}><b>{group}</b>{entries.map((layer) => <label key={layer.key}><input type="checkbox" checked={Boolean(active[layer.key])} onChange={() => onToggle(layer)} /> <span>{layer.label}</span><small>{layer.attribution}</small></label>)}</div>)}<p className="source-note">Legenda mengikuti layanan resmi. Overlay bahaya dirender transparan dan tidak memakai warna hijau sebagai indikator bahaya.</p></section>; }

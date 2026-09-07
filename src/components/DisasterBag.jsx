@@ -1,19 +1,3 @@
-import { useMemo, useState } from "react";
-import { uid } from "../data/storage";
-
-const DEFAULT = [
-  { name: "Air minum", category: "Air & makanan", quantity: 1, ready: false },
-  { name: "Obat pribadi", category: "Kesehatan", quantity: 1, ready: false },
-  { name: "Senter", category: "Peralatan", quantity: 1, ready: false },
-  { name: "Power bank", category: "Komunikasi", quantity: 1, ready: false },
-  { name: "Dokumen penting", category: "Dokumen", quantity: 1, ready: false },
-];
-
-export default function DisasterBag({ state, updateState }) {
-  const items = state.bagItems.length ? state.bagItems : DEFAULT;
-  const [draft, setDraft] = useState("");
-  const done = useMemo(() => items.filter((x) => x.ready).length, [items]);
-  function toggle(index) { updateState((s) => ({ ...s, bagItems: items.map((x, i) => i === index ? { ...x, ready: !x.ready } : x) })); }
-  function add() { if (!draft.trim()) return; updateState((s) => ({ ...s, bagItems: [...items, { id: uid("bag"), name: draft.trim(), category: "Lainnya", quantity: 1, ready: false }] })); setDraft(""); }
-  return <section className="page-panel"><div className="page-inner"><div className="page-header"><div><span className="eyebrow">KESIAPSIAGAAN</span><h1>Tas Bencana</h1><p>Daftar perlengkapan yang ingin Anda siapkan sebelum keadaan darurat.</p></div><div className="bag-progress"><strong>{done}/{items.length}</strong><span>siap</span></div></div><div className="progress-bar"><span style={{ width: `${items.length ? done / items.length * 100 : 0}%` }} /></div><div className="bag-list">{items.map((item, index) => <label className={`bag-item ${item.ready ? "ready" : ""}`} key={item.id || `${item.name}-${index}`}><input type="checkbox" checked={item.ready} onChange={() => toggle(index)} /><span className="bag-check">✓</span><div><strong>{item.name}</strong><small>{item.category} · jumlah {item.quantity}</small></div></label>)}</div><div className="bag-add"><input value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} placeholder="Tambah perlengkapan lain…" /><button className="primary-button" onClick={add}>Tambah</button></div></div></section>;
-}
+import { useState } from "react";
+import { newId } from "../storage/appState";
+export default function DisasterBag({ items, setItems }) { const [name, setName] = useState(""); const [category, setCategory] = useState("Lainnya"); const [quantity, setQuantity] = useState(1); const [notes, setNotes] = useState(""); const ready = items.filter((item) => item.ready).length; function add() { if (!name.trim()) return; setItems([...items, { id: newId("bag"), name: name.trim(), category, quantity: Number(quantity) || 1, notes, ready: false }]); setName(""); setNotes(""); } return <section><span className="eyebrow">KESIAPSIAGAAN</span><h2>Tas Bencana</h2><p>{ready}/{items.length} perlengkapan siap.</p><div className="bag-list">{items.map((item) => <article className="list-card" key={item.id}><label><input type="checkbox" checked={item.ready} onChange={() => setItems(items.map((value) => value.id === item.id ? { ...value, ready: !value.ready } : value))} /> <b>{item.name}</b></label><small>{item.category} · jumlah {item.quantity}{item.notes ? ` · ${item.notes}` : ""}</small><button className="danger" onClick={() => setItems(items.filter((value) => value.id !== item.id))}>Hapus</button></article>)}</div><div className="bag-form"><input value={name} onChange={(event) => setName(event.target.value)} placeholder="Nama perlengkapan" /><input value={category} onChange={(event) => setCategory(event.target.value)} placeholder="Kategori" /><input type="number" min="1" value={quantity} onChange={(event) => setQuantity(event.target.value)} /><textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Catatan (opsional)" /><button className="primary-button wide" onClick={add}>Tambah perlengkapan</button></div></section>; }

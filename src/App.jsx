@@ -1,275 +1,86 @@
 import { useEffect, useRef, useState } from "react";
-import { createMap } from "./map/map";
-import { addRouteToMap, clearRouteLayers } from "./map/routes";
-import { addInformationMarker, removeMarkers, buildRouteEditHandles } from "./map/markers";
-import { POINT_TYPES, OBSTACLE_TYPES } from "./data/pointTypes";
-import { loadState, saveState, uid } from "./data/storage";
+import { createMap, flyToCoordinates } from "./map/map";
+import { renderRoutes, clearRouteLayers } from "./map/routes";
+import { renderMarkers, clearMarkers, createVertexMarkers } from "./map/markers";
+import { BNPB_LAYERS, toggleBnpbLayer } from "./map/bnpbLayers";
+import { POINT_TYPES } from "./data/pointTypes";
+import { OBSTACLE_TYPES } from "./data/obstacleTypes";
+import { loadAppState, saveAppState, newId } from "./storage/appState";
 import Sidebar from "./components/Sidebar";
-import MapToolbar from "./components/MapToolbar";
-import MapLegend from "./components/MapLegend";
-import HazardControl from "./components/HazardControl";
+import RouteEditor from "./components/RouteEditor";
+import RouteManager from "./components/RouteManager";
 import PointMenu from "./components/PointMenu";
 import ObstacleMenu from "./components/ObstacleMenu";
-import LocationSetup from "./components/LocationSetup";
-import RouteEditor from "./components/RouteEditor";
 import DisasterBag from "./components/DisasterBag";
+import HazardControl from "./components/HazardControl";
 import "./App.css";
 
-const EMPTY_STATE = { location: null, routes: [], points: [], bagItems: [] };
+const MODES = { NORMAL: "normal", DRAW_ROUTE: "draw-route", EDIT_ROUTE: "edit-route", PLACE_POINT: "place-point", PLACE_OBSTACLE: "place-obstacle", PICK_LOCATION: "pick-location" };
+const emptyDraft = (number) => ({ id: null, name: `Rute ${number}`, description: "", geometry: { type: "LineString", coordinates: [] }, points: [], obstacles: [], status: "draft" });
 
 export default function App() {
-  const mapContainerRef = useRef(null);
-  const mapRef = useRef(null);
-  const mapLoadedRef = useRef(false);
-  const modeRef = useRef(null);
-  const draftRef = useRef(null);
-  const markerRefs = useRef([]);
-  const editMarkersRef = useRef([]);
-
-  const [page, setPage] = useState("map");
-  const [state, setState] = useState(() => ({ ...EMPTY_STATE, ...loadState() }));
-  const [mapInstance, setMapInstance] = useState(null);
-  const [selectedRouteId, setSelectedRouteId] = useState(null);
-  const [editor, setEditor] = useState(null);
-  const [mode, setMode] = useState(null);
-  const [pointMenu, setPointMenu] = useState(null);
-  const [obstacleMenu, setObstacleMenu] = useState(null);
-  const [nameModal, setNameModal] = useState(null);
-  const [locationModal, setLocationModal] = useState(false);
-  const [manualLocationMode, setManualLocationMode] = useState(false);
-
-  useEffect(() => { saveState(state); }, [state]);
-  useEffect(() => { modeRef.current = mode; }, [mode]);
-  useEffect(() => { draftRef.current = editor; }, [editor]);
+  const containerRef = useRef(null); const mapRef = useRef(null); const markersRef = useRef([]); const vertexRef = useRef([]);
+  const modeRef = useRef(MODES.NORMAL); const draftRef = useRef(null); const stateRef = useRef(null);
+  const [app, setApp] = useState(loadAppState); const [tab, setTab] = useState("map"); const [mode, setMode] = useState(MODES.NORMAL);
+  const [draft, setDraft] = useState(null); const [selectedRouteId, setSelectedRouteId] = useState(null); const [menu, setMenu] = useState(null);
+  const [mapStatus, setMapStatus] = useState("loading"); const [notice, setNotice] = useState(""); const [layers, setLayers] = useState({});
+  useEffect(() => { stateRef.current = app; saveAppState(app, setNotice); }, [app]);
+  useEffect(() => { modeRef.current = mode; draftRef.current = draft; }, [mode, draft]);
 
   useEffect(() => {
-    if (!mapContainerRef.current) return;
-    const map = createMap(mapContainerRef.current, state.location?.coordinates);
-    mapRef.current = map;
-    setMapInstance(map);
-
-    const onLoad = () => {
-      mapLoadedRef.current = true;
-      renderRoutes(map, state.routes, null);
-      renderPoints(map, state.points, null);
+    let map;
+    try { map = createMap(containerRef.current, app.location); mapRef.current = map; } catch (error) { setMapStatus("error"); setNotice(`Peta tidak dapat dibuat: ${error.message}`); return undefined; }
+    const refresh = () => {
+      renderRoutes(map, stateRef.current.routes, draftRef.current, selectedRouteId, (id) => { setSelectedRouteId(id); setTab("routes"); });
+      clearMarkers(markersRef.current); markersRef.current = renderMarkers(map, stateRef.current.points, stateRef.current.routes, draftRef.current);
     };
-    map.on("load", onLoad);
-
+    map.on("load", () => { setMapStatus("ready"); refresh(); });
+    map.on("error", (event) => { console.error("MapLibre error", event.error); if (!map.loaded()) { setMapStatus("error"); setNotice("Peta gagal dimuat. Periksa koneksi internet lalu muat ulang."); } });
     map.on("click", (event) => {
-      const current = modeRef.current;
-      if (manualLocationModeRef.current) {
-        setLocationFromMap(event.lngLat.lng, event.lngLat.lat);
-        return;
-      }
-      if (current === "draw") {
-        setEditor((draft) => draft ? { ...draft, coordinates: [...draft.coordinates, [event.lngLat.lng, event.lngLat.lat]] } : draft);
-        return;
-      }
-      if (current === "point") {
-        const p = map.project(event.lngLat);
-        setPointMenu({ x: p.x, y: p.y, lng: event.lngLat.lng, lat: event.lngLat.lat });
-        setMode("point-menu");
-        return;
-      }
-      if (current === "obstacle") {
-        const p = map.project(event.lngLat);
-        setObstacleMenu({ x: p.x, y: p.y, lng: event.lngLat.lng, lat: event.lngLat.lat });
-        setMode("obstacle-menu");
-        return;
-      }
-      setSelectedRouteId(null);
+      const current = modeRef.current; const coordinate = [event.lngLat.lng, event.lngLat.lat];
+      if (current === MODES.DRAW_ROUTE || current === MODES.EDIT_ROUTE) { setDraft((value) => value && ({ ...value, geometry: { ...value.geometry, coordinates: [...value.geometry.coordinates, coordinate] } })); return; }
+      if (current === MODES.PICK_LOCATION) { saveLocation(coordinate, "manual"); return; }
+      if (current === MODES.PLACE_POINT || current === MODES.PLACE_OBSTACLE) openMenu(current === MODES.PLACE_POINT ? "point" : "obstacle", coordinate);
     });
-
-    map.on("dblclick", (event) => {
-      if (modeRef.current || manualLocationModeRef.current) return;
-      const p = map.project(event.lngLat);
-      setPointMenu({ x: p.x, y: p.y, lng: event.lngLat.lng, lat: event.lngLat.lat });
-      setMode("point-menu");
-    });
-
-    return () => {
-      removeMarkers(markerRefs.current);
-      removeMarkers(editMarkersRef.current);
-      map.remove();
-      mapRef.current = null;
-      setMapInstance(null);
-    };
+    map.on("dblclick", (event) => { event.preventDefault(); if (modeRef.current === MODES.NORMAL) openMenu("point", [event.lngLat.lng, event.lngLat.lat]); });
+    function openMenu(kind, coordinate) { const p = map.project(coordinate); setMenu({ kind, coordinate, x: p.x, y: p.y }); }
+    return () => { clearMarkers(markersRef.current); clearMarkers(vertexRef.current); clearRouteLayers(map); map.remove(); };
   }, []);
-
-  const manualLocationModeRef = useRef(false);
-  useEffect(() => { manualLocationModeRef.current = manualLocationMode; }, [manualLocationMode]);
-
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !mapLoadedRef.current) return;
-    renderRoutes(map, state.routes, selectedRouteId);
-    renderPoints(map, state.points, editor);
-  }, [state.routes, state.points, selectedRouteId, editor]);
-
+    const map = mapRef.current; if (!map?.loaded()) return;
+    renderRoutes(map, app.routes, draft, selectedRouteId, (id) => { setSelectedRouteId(id); setTab("routes"); });
+    clearMarkers(markersRef.current); markersRef.current = renderMarkers(map, app.points, app.routes, draft);
+  }, [app.routes, app.points, draft, selectedRouteId]);
   useEffect(() => {
-    const map = mapRef.current;
-    removeMarkers(editMarkersRef.current);
-    if (!map || !editor || !["edit", "draw"].includes(mode)) return;
-    if (editor.coordinates.length < 1) return;
-    editMarkersRef.current = buildRouteEditHandles({
-      map,
-      coordinates: editor.coordinates,
-      routeType: "route",
-      onMoveEndpoint: (index, coordinate) => setEditor((v) => ({ ...v, coordinates: v.coordinates.map((p, i) => i === index ? coordinate : p) })),
-      onInsertVertex: (index, coordinate) => setEditor((v) => ({ ...v, coordinates: [...v.coordinates.slice(0, index), coordinate, ...v.coordinates.slice(index)] })),
-    });
-  }, [editor?.coordinates, mode]);
+    const map = mapRef.current; clearMarkers(vertexRef.current); if (!map || !draft || ![MODES.DRAW_ROUTE, MODES.EDIT_ROUTE].includes(mode)) return;
+    vertexRef.current = createVertexMarkers(map, draft.geometry.coordinates, (index, coordinate) => setDraft((value) => ({ ...value, geometry: { ...value.geometry, coordinates: value.geometry.coordinates.map((item, i) => i === index ? coordinate : item) } })), (index) => setDraft((value) => ({ ...value, geometry: { ...value.geometry, coordinates: value.geometry.coordinates.filter((_, i) => i !== index) } })));
+  }, [draft?.geometry.coordinates, mode]);
 
-  function renderRoutes(map, routes, selectedId) {
-    clearRouteLayers(map);
-    routes.forEach((route) => addRouteToMap(map, route, route.id === selectedId, () => setSelectedRouteId(route.id)));
-    if (editor?.coordinates?.length >= 2 && (mode === "draw" || mode === "edit")) {
-      addRouteToMap(map, { id: "__draft__", name: editor.name || "Rute baru", coordinates: editor.coordinates }, true, () => {});
-    }
-  }
-
-  function renderPoints(map, points, currentEditor = null) {
-    removeMarkers(markerRefs.current);
-    points.forEach((point) => {
-      const marker = addInformationMarker({ map, point });
-      if (marker) markerRefs.current.push(marker);
-    });
-    const routes = state.routes;
-    routes.forEach((route) => {
-      [...(route.points || []), ...(route.obstacles || [])].forEach((point) => {
-        const marker = addInformationMarker({ map, point });
-        if (marker) markerRefs.current.push(marker);
-      });
-    });
-    if (currentEditor) {
-      [...(currentEditor.points || []), ...(currentEditor.obstacles || [])].forEach((point) => {
-        const marker = addInformationMarker({ map, point });
-        if (marker) markerRefs.current.push(marker);
-      });
-    }
-  }
-
-  function beginNewRoute() {
-    setPage("map"); setSelectedRouteId(null); setPointMenu(null); setObstacleMenu(null);
-    setEditor({ id: null, name: `Rute ${state.routes.length + 1}`, coordinates: [], points: [], obstacles: [] });
-    setMode("draw");
-  }
-
-  function openEditRoute(route) {
-    setPage("map"); setSelectedRouteId(null); setPointMenu(null); setObstacleMenu(null);
-    setEditor(JSON.parse(JSON.stringify(route)));
-    setMode("edit");
-  }
-
-  function cancelEditor() {
-    setEditor(null); setMode(null); setPointMenu(null); setObstacleMenu(null);
-    removeMarkers(editMarkersRef.current);
-    if (mapRef.current && mapLoadedRef.current) renderRoutes(mapRef.current, state.routes, selectedRouteId);
-  }
-
+  function beginRoute() { setTab("map"); setSelectedRouteId(null); setMenu(null); setDraft(emptyDraft(app.routes.length + 1)); setMode(MODES.DRAW_ROUTE); }
+  function editRoute(route) { setTab("map"); setSelectedRouteId(route.id); setDraft(structuredClone(route)); setMode(MODES.EDIT_ROUTE); }
+  function cancelRoute() { setDraft(null); setMenu(null); setMode(MODES.NORMAL); }
   function saveRoute() {
-    if (!editor?.name?.trim()) { alert("Nama rute belum diisi."); return; }
-    if (editor.coordinates.length < 2) { alert("Rute harus memiliki minimal dua titik jalur."); return; }
-    const clean = { ...editor, name: editor.name.trim(), updatedAt: new Date().toISOString() };
-    setState((s) => ({ ...s, routes: editor.id ? s.routes.map((r) => r.id === editor.id ? clean : r) : [...s.routes, { ...clean, id: uid("route"), createdAt: new Date().toISOString() }] }));
-    setEditor(null); setMode(null); setSelectedRouteId(null); removeMarkers(editMarkersRef.current);
+    if (!draft.name.trim()) return setNotice("Nama rute wajib diisi sebelum disimpan.");
+    if (draft.geometry.coordinates.length < 2) return setNotice("Rute memerlukan minimal dua titik jalur.");
+    const now = new Date().toISOString(); const route = { ...draft, name: draft.name.trim(), status: "active", visible: draft.visible !== false, updated_at: now, created_at: draft.created_at || now, id: draft.id || newId("route") };
+    setApp((value) => ({ ...value, routes: draft.id ? value.routes.map((item) => item.id === draft.id ? route : item) : [...value.routes, route] })); setSelectedRouteId(route.id); setDraft(null); setMode(MODES.NORMAL); setNotice("Rute tersimpan di perangkat ini.");
   }
-
-  function deleteRouteById(id) {
-    const route = state.routes.find((r) => r.id === id);
-    if (!route) return;
-    if (!window.confirm(`Hapus ${route.name}?`)) return;
-    setState((s) => ({ ...s, routes: s.routes.filter((r) => r.id !== id) }));
-    if (selectedRouteId === id) setSelectedRouteId(null);
-  }
-
-  function deleteSelectedRoute() {
-    if (selectedRouteId) deleteRouteById(selectedRouteId);
-  }
-
-  function addPointTool() { setPointMenu(null); setObstacleMenu(null); setMode("point"); }
-  function addObstacleTool() { setPointMenu(null); setObstacleMenu(null); setMode("obstacle"); }
-
-  function choosePointType(item) {
-    const pos = pointMenu;
-    setPointMenu(null);
-    if (!pos) return;
-    setNameModal({ kind: "point", item, lng: pos.lng, lat: pos.lat });
-  }
-
-  function chooseObstacleType(item) {
-    const pos = obstacleMenu;
-    setObstacleMenu(null);
-    if (!pos) return;
-    setNameModal({ kind: "obstacle", item, lng: pos.lng, lat: pos.lat });
-  }
-
-  function saveNamedPoint(name) {
-    if (!nameModal) return;
-    const item = { id: uid(nameModal.kind), type: nameModal.item.type, label: nameModal.item.label, icon: nameModal.item.icon, name: name.trim() || nameModal.item.label, lng: nameModal.lng, lat: nameModal.lat };
-    if (editor) {
-      setEditor((v) => ({ ...v, [nameModal.kind === "point" ? "points" : "obstacles"]: [...v[nameModal.kind === "point" ? "points" : "obstacles"], item] }));
-    } else {
-      setState((s) => ({ ...s, points: [...s.points, item] }));
-    }
-    setNameModal(null); setMode(editor ? "edit" : null);
-  }
-
-  function setLocationFromMap(lng, lat) {
-    const coordinates = [lng, lat];
-    setState((s) => ({ ...s, location: { coordinates, source: "manual" } }));
-    setManualLocationMode(false); setLocationModal(false);
-    mapRef.current?.flyTo({ center: coordinates, zoom: 16, duration: 900 });
-  }
-
-  function useGPS() {
-    if (!navigator.geolocation) { alert("Browser tidak mendukung lokasi."); return; }
-    navigator.geolocation.getCurrentPosition((position) => {
-      const coordinates = [position.coords.longitude, position.coords.latitude];
-      setState((s) => ({ ...s, location: { coordinates, source: "gps" } }));
-      setLocationModal(false); setManualLocationMode(false);
-      mapRef.current?.flyTo({ center: coordinates, zoom: 16, duration: 1000 });
-    }, () => alert("Lokasi tidak dapat diakses. Periksa izin lokasi browser."), { enableHighAccuracy: true, timeout: 10000 });
-  }
-
-  function chooseManualLocation() { setLocationModal(false); setManualLocationMode(true); setPage("map"); }
-  function locateUser() { if (state.location?.coordinates) mapRef.current?.flyTo({ center: state.location.coordinates, zoom: 16, duration: 900 }); else setLocationModal(true); }
-
-  const selectedRoute = state.routes.find((r) => r.id === selectedRouteId) || null;
-  const pageContent = page === "routes" ? <RoutesPage routes={state.routes} onNew={beginNewRoute} onEdit={openEditRoute} onDelete={(id) => deleteRouteById(id)} /> : page === "bag" ? <DisasterBag state={state} updateState={setState} /> : page === "points" ? <PointsPage points={state.points} /> : null;
-
-  return (
-    <div className="app-shell">
-      <Sidebar page={page} setPage={setPage} state={state} onSetLocation={() => setLocationModal(true)} onOpenRoute={openEditRoute} />
-      <main className="workspace">
-        {page === "map" ? <div className="map-page">
-          <div ref={mapContainerRef} className="map" />
-          <MapToolbar selectedRoute={selectedRoute} onNewRoute={beginNewRoute} onEdit={() => openEditRoute(selectedRoute)} onDelete={deleteSelectedRoute} onLocation={locateUser} onCloseSelection={() => setSelectedRouteId(null)} />
-          <HazardControl map={mapInstance} />
-          <MapLegend />
-          {editor && <RouteEditor editor={editor} setEditor={setEditor} activeMode={mode} onFinish={saveRoute} onCancel={cancelEditor} onAddPoint={addPointTool} onAddObstacle={addObstacleTool} />}
-          {pointMenu && <PointMenu position={pointMenu} pointTypes={POINT_TYPES} title="Pilih jenis titik" onSelect={choosePointType} onCancel={() => { setPointMenu(null); setMode(editor ? "edit" : null); }} />}
-          {obstacleMenu && <ObstacleMenu position={obstacleMenu} types={OBSTACLE_TYPES} onSelect={chooseObstacleType} onCancel={() => { setObstacleMenu(null); setMode(editor ? "edit" : null); }} />}
-          {manualLocationMode && <div className="map-hint"><strong>Pilih lokasi</strong> · Klik satu titik pada peta untuk menyimpannya</div>}
-          {!editor && !manualLocationMode && <div className="map-hint">Buat rute dari kiri atas, atau double-click peta untuk menambah titik informasi.</div>}
-          {editor && !pointMenu && !obstacleMenu && <div className="map-hint"><strong>{mode === "draw" ? "Gambar rute" : "Edit rute"}</strong> · Klik peta untuk menambah belokan.</div>}
-        </div> : pageContent}
-        {locationModal && <LocationSetup existing={Boolean(state.location)} onGPS={useGPS} onManual={chooseManualLocation} onClose={() => setLocationModal(false)} />}
-        {nameModal && <PointNameModal draft={nameModal} onSave={saveNamedPoint} onCancel={() => { setNameModal(null); setMode(editor ? "edit" : null); }} />}
-      </main>
-    </div>
-  );
+  function saveLocation(coordinates, source) { const location = { longitude: coordinates[0], latitude: coordinates[1], source, timestamp: new Date().toISOString() }; setApp((value) => ({ ...value, location })); flyToCoordinates(mapRef.current, coordinates, 15); setMode(MODES.NORMAL); setNotice("Lokasi awal tersimpan."); }
+  function useGps() { if (!navigator.geolocation) return setNotice("Geolokasi tidak tersedia pada browser ini."); navigator.geolocation.getCurrentPosition((position) => saveLocation([position.coords.longitude, position.coords.latitude], "gps"), (error) => setNotice(error.code === 1 ? "Izin lokasi ditolak. Pilih lokasi manual di peta." : "Lokasi tidak tersedia. Coba lagi atau pilih manual."), { enableHighAccuracy: true, timeout: 10000 }); }
+  function chooseType(type) { const typeData = (menu.kind === "point" ? POINT_TYPES : OBSTACLE_TYPES).find((item) => item.key === type); const object = { id: newId(menu.kind), type: typeData.key, icon: typeData.icon, name: typeData.label, description: "", location: menu.coordinate, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }; setMenu({ ...menu, form: object }); }
+  function saveObject(form) { const object = { ...menu.form, ...form, updated_at: new Date().toISOString() }; if (draft) setDraft((value) => ({ ...value, [menu.kind === "point" ? "points" : "obstacles"]: [...value[menu.kind === "point" ? "points" : "obstacles"], object] })); else setApp((value) => ({ ...value, points: [...value.points, object] })); setMenu(null); setMode(draft ? MODES.EDIT_ROUTE : MODES.NORMAL); }
+  function toggleLayer(layer) { const enabled = !layers[layer.key]; try { toggleBnpbLayer(mapRef.current, layer, enabled, (message) => setNotice(message)); setLayers((value) => ({ ...value, [layer.key]: enabled })); } catch (error) { console.error("BNPB layer error", error); setNotice(`Layer ${layer.label} gagal diaktifkan: ${error.message}`); } }
+  const selected = app.routes.find((route) => route.id === selectedRouteId);
+  return <div className="app-shell"><Sidebar tab={tab} setTab={setTab} counts={{ routes: app.routes.length, points: app.points.length }} onLocation={() => setMode(MODES.PICK_LOCATION)} />
+    <main className="workspace"><div ref={containerRef} className="map" />{mapStatus !== "ready" && <div className="map-state">{mapStatus === "loading" ? "Memuat peta Indonesia…" : "Peta tidak tersedia. Periksa koneksi lalu muat ulang."}</div>}
+      <div className="map-toolbar"><button className="primary-button" onClick={beginRoute}>＋ Buat rute</button><button className="secondary-button" onClick={useGps}>⌖ GPS</button><button className="secondary-button" onClick={() => { setTab("layers"); }}>◫ Layer</button></div>
+      {notice && <div className="notice" role="status">{notice}<button onClick={() => setNotice("")}>×</button></div>}
+      {draft && <RouteEditor draft={draft} setDraft={setDraft} mode={mode} onDraw={() => setMode(draft.id ? MODES.EDIT_ROUTE : MODES.DRAW_ROUTE)} onPoint={() => setMode(MODES.PLACE_POINT)} onObstacle={() => setMode(MODES.PLACE_OBSTACLE)} onSave={saveRoute} onCancel={cancelRoute} />}
+      {menu && !menu.form && (menu.kind === "point" ? <PointMenu position={menu} types={POINT_TYPES} onSelect={chooseType} onCancel={() => { setMenu(null); setMode(draft ? MODES.EDIT_ROUTE : MODES.NORMAL); }} /> : <ObstacleMenu position={menu} types={OBSTACLE_TYPES} onSelect={chooseType} onCancel={() => setMenu(null)} />)}
+      {menu?.form && <ObjectForm item={menu.form} onSave={saveObject} onCancel={() => setMenu(null)} />}
+      <aside className="context-panel">{tab === "routes" && <RouteManager routes={app.routes} selectedRouteId={selectedRouteId} onCreate={beginRoute} onSelect={(route) => { setSelectedRouteId(route.id); flyToCoordinates(mapRef.current, route.geometry.coordinates[0], 14); }} onEdit={editRoute} onToggle={(route) => setApp((value) => ({ ...value, routes: value.routes.map((item) => item.id === route.id ? { ...item, visible: item.visible === false } : item) }))} onDelete={(route) => setApp((value) => ({ ...value, routes: value.routes.filter((item) => item.id !== route.id) }))} />}{tab === "points" && <PointList points={app.points} />}{tab === "bag" && <DisasterBag items={app.bagItems} setItems={(bagItems) => setApp((value) => ({ ...value, bagItems }))} />}{tab === "layers" && <HazardControl layers={BNPB_LAYERS} active={layers} onToggle={toggleLayer} />}{tab === "map" && <MapIntro mode={mode} location={app.location} selected={selected} />}</aside>
+    </main></div>;
 }
-
-function RoutesPage({ routes, onNew, onEdit, onDelete }) {
-  return <section className="page-panel"><div className="page-inner"><div className="page-header"><div><span className="eyebrow">EVAKUASI</span><h1>Rute Saya</h1><p>Buat sebanyak yang diperlukan. Setiap rute berdiri sendiri dan dapat diedit tanpa memengaruhi rute lain.</p></div><button className="primary-button" onClick={onNew}>＋ Buat rute</button></div>{routes.length ? <div className="route-grid">{routes.map((route, index) => <article className="route-card" key={route.id}><div className="route-card-top"><div className="route-number">{index + 1}</div><div><h3>{route.name}</h3><small>{route.coordinates.length} titik jalur</small></div></div><div className="route-meta"><span>{(route.points || []).length} titik informasi</span><span>{(route.obstacles || []).length} rintangan</span></div><div className="card-actions"><button onClick={() => onEdit(route)}>Edit</button><button className="delete" onClick={() => onDelete(route.id)}>Hapus</button></div></article>)}</div> : <div className="empty-state"><h3>Belum ada rute</h3><p>Buat rute pertama dengan menggambar jalur langsung pada peta.</p><button className="primary-button" onClick={onNew}>＋ Buat rute pertama</button></div>}</div></section>;
-}
-
-function PointsPage({ points }) {
-  return <section className="page-panel"><div className="page-inner"><div className="page-header"><div><span className="eyebrow">KONTEKS LOKAL</span><h1>Titik Saya</h1><p>Titik informasi yang Anda simpan di peta.</p></div></div>{points.length ? <div className="point-list">{points.map((point) => <article className="point-card" key={point.id}><div className="point-icon">{point.icon}</div><div><strong>{point.name}</strong><small>{point.label}</small></div></article>)}</div> : <div className="empty-state"><h3>Belum ada titik</h3><p>Di peta, gunakan alat titik informasi untuk menambahkan lokasi yang penting bagi rencana Anda.</p></div>}</div></section>;
-}
-
-function PointNameModal({ draft, onSave, onCancel }) {
-  const [name, setName] = useState(draft.item.label);
-  return <div className="modal-backdrop"><section className="setup-card point-form"><div className="setup-icon">{draft.item.icon}</div><span className="eyebrow">{draft.kind === "point" ? "TITIK INFORMASI" : "RINTANGAN"}</span><h2>Beri nama</h2><p>Nama ini akan tampil ketika titik dipilih atau dilihat pada daftar.</p><label className="field-label">Nama<input autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && onSave(name)} /></label><div className="editor-actions"><button className="secondary-button" onClick={onCancel}>Batal</button><button className="primary-button" onClick={() => onSave(name)}>Simpan</button></div></section></div>;
-}
+function MapIntro({ mode, location, selected }) { return <section><span className="eyebrow">RUANG KERJA PETA</span><h1>MITIGASI</h1><p>{mode === MODES.PICK_LOCATION ? "Klik peta untuk menyimpan lokasi awal manual." : selected ? `Rute terpilih: ${selected.name}` : "Klik dua kali peta untuk menambah titik informasi. Semua rute digambar manual."}</p>{location && <small>Lokasi awal: {location.source === "gps" ? "GPS" : "manual"} · tersimpan</small>}<div className="legend"><b>Legenda</b><span>━━ Rute Anda</span><span>● Titik informasi</span><span>⚠ Hambatan</span></div></section>; }
+function PointList({ points }) { return <section><span className="eyebrow">TITIK SAYA</span><h2>Titik informasi</h2>{points.length ? points.map((point) => <article className="list-card" key={point.id}><b>{point.icon} {point.name}</b><small>{point.type}</small></article>) : <p>Belum ada titik. Double-click peta saat mode normal untuk membuatnya.</p>}</section>; }
+function ObjectForm({ item, onSave, onCancel }) { const [name, setName] = useState(item.name); const [description, setDescription] = useState(""); return <div className="modal"><section><span className="eyebrow">{item.icon} TITIK BARU</span><h2>Lengkapi informasi</h2><label>Nama<input autoFocus value={name} onChange={(e) => setName(e.target.value)} /></label><label>Deskripsi (opsional)<textarea value={description} onChange={(e) => setDescription(e.target.value)} /></label><div><button className="secondary-button" onClick={onCancel}>Batal</button><button className="primary-button" onClick={() => onSave({ name: name.trim() || item.name, description })}>Simpan</button></div></section></div>; }

@@ -1,0 +1,9 @@
+const root = "https://gis.bnpb.go.id/server/rest/services/inarisk";
+const mapService = (service) => `${root}/${service}/MapServer`;
+export const BNPB_LAYERS = [
+  { key: "hazard-tsunami", label: "Tsunami", group: "Bahaya", serviceUrl: mapService("layer_bahaya_tsunami_30"), serviceType: "MapServer", opacity: .5, attribution: "Sumber: BNPB / InaRISK", legend: "Gunakan legenda resmi layanan BNPB / InaRISK." },
+  { key: "hazard-volcano", label: "Letusan Gunungapi", group: "Bahaya", serviceUrl: mapService("layer_bahaya_letusan_gunungapi_30"), serviceType: "MapServer", opacity: .5, attribution: "Sumber: BNPB / InaRISK", legend: "Overlay bahaya resmi." },
+  { key: "hazard-earthquake", label: "Gempabumi", group: "Bahaya", serviceUrl: mapService("layer_bahaya_gempabumi_30"), serviceType: "MapServer", opacity: .5, attribution: "Sumber: BNPB / InaRISK", legend: "Overlay bahaya resmi." },
+  { key: "hazard-flood", label: "Banjir", group: "Bahaya", serviceUrl: mapService("layer_bahaya_banjir_30"), serviceType: "MapServer", opacity: .5, attribution: "Sumber: BNPB / InaRISK", legend: "Overlay bahaya resmi." },
+];
+export function toggleBnpbLayer(map, layer, enabled, onError) { const sourceId = `bnpb-${layer.key}`; if (!map?.isStyleLoaded()) throw new Error("Peta belum siap"); if (!map.getSource(sourceId)) { map.addSource(sourceId, { type: "raster", tiles: [`${layer.serviceUrl}/export?bbox={bbox-epsg-3857}&bboxSR=3857&imageSR=3857&size=512,512&format=png32&transparent=true&f=image`], tileSize: 512, attribution: layer.attribution }); map.addLayer({ id: sourceId, type: "raster", source: sourceId, paint: { "raster-opacity": layer.opacity } }); map.on("error", (event) => { if (event.sourceId === sourceId) onError?.(`${layer.label} tidak dapat dimuat dari layanan BNPB / InaRISK. Anda dapat mematikannya dan mencoba lagi.`); }); } else map.setLayoutProperty(sourceId, "visibility", enabled ? "visible" : "none"); }

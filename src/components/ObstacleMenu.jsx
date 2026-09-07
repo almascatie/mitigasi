@@ -1,12 +1,1 @@
-export default function ObstacleMenu({ position, types, onSelect, onCancel }) {
-  if (!position) return null;
-  return (
-    <div className="point-menu" style={{ left: position.x, top: position.y }}>
-      <div className="point-menu-head"><strong>Jenis rintangan</strong><button onClick={onCancel}>×</button></div>
-      <p>Tambahkan kondisi yang perlu diperhatikan pada jalur.</p>
-      <div className="point-grid">
-        {types.map((item) => <button key={item.type} onClick={() => onSelect(item)}><span>{item.icon}</span>{item.label}</button>)}
-      </div>
-    </div>
-  );
-}
+export default function ObstacleMenu({ position, types, onSelect, onCancel }) { return <div className="point-menu" style={{ left: position.x, top: position.y }}><header><b>Pilih hambatan</b><button onClick={onCancel}>×</button></header><div>{types.map((type) => <button key={type.key} onClick={() => onSelect(type.key)}><span>{type.icon}</span>{type.label}</button>)}</div></div>; }
