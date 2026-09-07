@@ -1,1 +1,0 @@
-export default function PointMenu({ position, types, onSelect, onCancel }) { return <div className="point-menu" style={{ left: position.x, top: position.y }}><header><b>Pilih jenis titik</b><button onClick={onCancel}>×</button></header><div>{types.map((type) => <button key={type.key} onClick={() => onSelect(type.key)}><span>{type.icon}</span>{type.label}</button>)}</div></div>; }

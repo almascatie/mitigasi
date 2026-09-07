@@ -1,86 +1,91 @@
 import { useEffect, useRef, useState } from "react";
+import * as maplibregl from "maplibre-gl";
 import { createMap, flyToCoordinates } from "./map/map";
-import { renderRoutes, clearRouteLayers } from "./map/routes";
-import { renderMarkers, clearMarkers, createVertexMarkers } from "./map/markers";
-import { BNPB_LAYERS, toggleBnpbLayer } from "./map/bnpbLayers";
-import { POINT_TYPES } from "./data/pointTypes";
-import { OBSTACLE_TYPES } from "./data/obstacleTypes";
-import { loadAppState, saveAppState, newId } from "./storage/appState";
-import Sidebar from "./components/Sidebar";
-import RouteEditor from "./components/RouteEditor";
-import RouteManager from "./components/RouteManager";
-import PointMenu from "./components/PointMenu";
-import ObstacleMenu from "./components/ObstacleMenu";
-import DisasterBag from "./components/DisasterBag";
-import HazardControl from "./components/HazardControl";
+import { loadMitigation, newId, saveMitigation } from "./storage/appState";
 import "./App.css";
 
-const MODES = { NORMAL: "normal", DRAW_ROUTE: "draw-route", EDIT_ROUTE: "edit-route", PLACE_POINT: "place-point", PLACE_OBSTACLE: "place-obstacle", PICK_LOCATION: "pick-location" };
-const emptyDraft = (number) => ({ id: null, name: `Rute ${number}`, description: "", geometry: { type: "LineString", coordinates: [] }, points: [], obstacles: [], status: "draft" });
+const MODES = { browse: "browse", route: "route", point: "point", obstacle: "obstacle" };
+const pointPresets = ["Rumah", "Sekolah", "Kantor", "Lainnya"];
+const obstaclePresets = ["Jalan tertutup", "Banjir", "Longsor", "Kemacetan", "Jalan sempit", "Jembatan bermasalah", "Pohon tumbang", "Lainnya"];
+const blankRoute = (number) => ({ id: null, name: `Rute ${number}`, description: "", coordinates: [], visible: true });
 
 export default function App() {
-  const containerRef = useRef(null); const mapRef = useRef(null); const markersRef = useRef([]); const vertexRef = useRef([]);
-  const modeRef = useRef(MODES.NORMAL); const draftRef = useRef(null); const stateRef = useRef(null);
-  const [app, setApp] = useState(loadAppState); const [tab, setTab] = useState("map"); const [mode, setMode] = useState(MODES.NORMAL);
-  const [draft, setDraft] = useState(null); const [selectedRouteId, setSelectedRouteId] = useState(null); const [menu, setMenu] = useState(null);
-  const [mapStatus, setMapStatus] = useState("loading"); const [notice, setNotice] = useState(""); const [layers, setLayers] = useState({});
-  useEffect(() => { stateRef.current = app; saveAppState(app, setNotice); }, [app]);
-  useEffect(() => { modeRef.current = mode; draftRef.current = draft; }, [mode, draft]);
+  const mapNode = useRef(null); const mapRef = useRef(null); const vertexMarkers = useRef([]); const modeRef = useRef(MODES.browse);
+  const [data, setData] = useState(loadMitigation); const [area, setArea] = useState("map"); const [tool, setTool] = useState("routes");
+  const [mode, setMode] = useState(MODES.browse); const [routeDraft, setRouteDraft] = useState(null); const [objectDraft, setObjectDraft] = useState(null);
+  const [selected, setSelected] = useState(null); const [layers, setLayers] = useState({ routes: true, points: true, obstacles: true }); const [message, setMessage] = useState("");
+  const dataRef = useRef(data); const layersRef = useRef(layers);
 
+  useEffect(() => { saveMitigation(data); }, [data]);
+  useEffect(() => { modeRef.current = mode; dataRef.current = data; layersRef.current = layers; }, [mode, data, layers]);
   useEffect(() => {
-    let map;
-    try { map = createMap(containerRef.current, app.location); mapRef.current = map; } catch (error) { setMapStatus("error"); setNotice(`Peta tidak dapat dibuat: ${error.message}`); return undefined; }
-    const refresh = () => {
-      renderRoutes(map, stateRef.current.routes, draftRef.current, selectedRouteId, (id) => { setSelectedRouteId(id); setTab("routes"); });
-      clearMarkers(markersRef.current); markersRef.current = renderMarkers(map, stateRef.current.points, stateRef.current.routes, draftRef.current);
-    };
-    map.on("load", () => { setMapStatus("ready"); refresh(); });
-    map.on("error", (event) => { console.error("MapLibre error", event.error); if (!map.loaded()) { setMapStatus("error"); setNotice("Peta gagal dimuat. Periksa koneksi internet lalu muat ulang."); } });
+    const map = createMap(mapNode.current, dataRef.current); mapRef.current = map;
+    map.on("load", () => paint(map, dataRef.current, null, layersRef.current));
     map.on("click", (event) => {
-      const current = modeRef.current; const coordinate = [event.lngLat.lng, event.lngLat.lat];
-      if (current === MODES.DRAW_ROUTE || current === MODES.EDIT_ROUTE) { setDraft((value) => value && ({ ...value, geometry: { ...value.geometry, coordinates: [...value.geometry.coordinates, coordinate] } })); return; }
-      if (current === MODES.PICK_LOCATION) { saveLocation(coordinate, "manual"); return; }
-      if (current === MODES.PLACE_POINT || current === MODES.PLACE_OBSTACLE) openMenu(current === MODES.PLACE_POINT ? "point" : "obstacle", coordinate);
+      const coordinate = [event.lngLat.lng, event.lngLat.lat];
+      if (modeRef.current === MODES.route) setRouteDraft((draft) => draft && { ...draft, coordinates: [...draft.coordinates, coordinate] });
+      if (modeRef.current === MODES.point || modeRef.current === MODES.obstacle) setObjectDraft({ kind: modeRef.current, coordinate, name: modeRef.current === MODES.point ? "Titik baru" : "Hambatan baru", category: "" });
     });
-    map.on("dblclick", (event) => { event.preventDefault(); if (modeRef.current === MODES.NORMAL) openMenu("point", [event.lngLat.lng, event.lngLat.lat]); });
-    function openMenu(kind, coordinate) { const p = map.project(coordinate); setMenu({ kind, coordinate, x: p.x, y: p.y }); }
-    return () => { clearMarkers(markersRef.current); clearMarkers(vertexRef.current); clearRouteLayers(map); map.remove(); };
+    map.on("dblclick", (event) => { event.preventDefault(); if (modeRef.current === MODES.browse) setObjectDraft({ kind: "point", coordinate: [event.lngLat.lng, event.lngLat.lat], name: "Titik baru", category: "" }); });
+    return () => { vertexMarkers.current.forEach((marker) => marker.remove()); map.remove(); };
   }, []);
+  useEffect(() => { if (mapRef.current?.loaded()) paint(mapRef.current, data, routeDraft, layers); }, [data, routeDraft, layers]);
   useEffect(() => {
-    const map = mapRef.current; if (!map?.loaded()) return;
-    renderRoutes(map, app.routes, draft, selectedRouteId, (id) => { setSelectedRouteId(id); setTab("routes"); });
-    clearMarkers(markersRef.current); markersRef.current = renderMarkers(map, app.points, app.routes, draft);
-  }, [app.routes, app.points, draft, selectedRouteId]);
-  useEffect(() => {
-    const map = mapRef.current; clearMarkers(vertexRef.current); if (!map || !draft || ![MODES.DRAW_ROUTE, MODES.EDIT_ROUTE].includes(mode)) return;
-    vertexRef.current = createVertexMarkers(map, draft.geometry.coordinates, (index, coordinate) => setDraft((value) => ({ ...value, geometry: { ...value.geometry, coordinates: value.geometry.coordinates.map((item, i) => i === index ? coordinate : item) } })), (index) => setDraft((value) => ({ ...value, geometry: { ...value.geometry, coordinates: value.geometry.coordinates.filter((_, i) => i !== index) } })));
-  }, [draft?.geometry.coordinates, mode]);
+    vertexMarkers.current.forEach((marker) => marker.remove()); vertexMarkers.current = [];
+    const map = mapRef.current;
+    if (!map?.loaded() || mode !== MODES.route || !routeDraft) return undefined;
+    vertexMarkers.current = routeDraft.coordinates.map((coordinate, index) => {
+      const element = document.createElement("button"); element.className = "route-vertex"; element.setAttribute("aria-label", `Titik jalur ${index + 1}`);
+      const marker = new maplibregl.Marker({ element, draggable: true }).setLngLat(coordinate).addTo(map);
+      marker.on("dragend", () => { const position = marker.getLngLat(); setRouteDraft((current) => current && ({ ...current, coordinates: current.coordinates.map((item, itemIndex) => itemIndex === index ? [position.lng, position.lat] : item) })); });
+      return marker;
+    });
+    return () => vertexMarkers.current.forEach((marker) => marker.remove());
+  }, [mode, routeDraft]);
 
-  function beginRoute() { setTab("map"); setSelectedRouteId(null); setMenu(null); setDraft(emptyDraft(app.routes.length + 1)); setMode(MODES.DRAW_ROUTE); }
-  function editRoute(route) { setTab("map"); setSelectedRouteId(route.id); setDraft(structuredClone(route)); setMode(MODES.EDIT_ROUTE); }
-  function cancelRoute() { setDraft(null); setMenu(null); setMode(MODES.NORMAL); }
+  function startRoute(route = null) { setArea("mitigation"); setTool("routes"); setObjectDraft(null); setRouteDraft(route ? { ...route, coordinates: [...route.coordinates] } : blankRoute(data.routes.length + 1)); setMode(MODES.route); }
   function saveRoute() {
-    if (!draft.name.trim()) return setNotice("Nama rute wajib diisi sebelum disimpan.");
-    if (draft.geometry.coordinates.length < 2) return setNotice("Rute memerlukan minimal dua titik jalur.");
-    const now = new Date().toISOString(); const route = { ...draft, name: draft.name.trim(), status: "active", visible: draft.visible !== false, updated_at: now, created_at: draft.created_at || now, id: draft.id || newId("route") };
-    setApp((value) => ({ ...value, routes: draft.id ? value.routes.map((item) => item.id === draft.id ? route : item) : [...value.routes, route] })); setSelectedRouteId(route.id); setDraft(null); setMode(MODES.NORMAL); setNotice("Rute tersimpan di perangkat ini.");
+    if (!routeDraft.name.trim()) return setMessage("Beri nama rute terlebih dahulu.");
+    if (routeDraft.coordinates.length < 2) return setMessage("Rute membutuhkan minimal dua titik.");
+    const item = { ...routeDraft, id: routeDraft.id || newId("route"), name: routeDraft.name.trim(), updatedAt: new Date().toISOString(), visible: routeDraft.visible !== false };
+    setData((current) => ({ ...current, routes: item.id === routeDraft.id && current.routes.some((route) => route.id === item.id) ? current.routes.map((route) => route.id === item.id ? item : route) : [...current.routes, item] }));
+    setRouteDraft(null); setMode(MODES.browse); setMessage("Rute tersimpan di peta.");
   }
-  function saveLocation(coordinates, source) { const location = { longitude: coordinates[0], latitude: coordinates[1], source, timestamp: new Date().toISOString() }; setApp((value) => ({ ...value, location })); flyToCoordinates(mapRef.current, coordinates, 15); setMode(MODES.NORMAL); setNotice("Lokasi awal tersimpan."); }
-  function useGps() { if (!navigator.geolocation) return setNotice("Geolokasi tidak tersedia pada browser ini."); navigator.geolocation.getCurrentPosition((position) => saveLocation([position.coords.longitude, position.coords.latitude], "gps"), (error) => setNotice(error.code === 1 ? "Izin lokasi ditolak. Pilih lokasi manual di peta." : "Lokasi tidak tersedia. Coba lagi atau pilih manual."), { enableHighAccuracy: true, timeout: 10000 }); }
-  function chooseType(type) { const typeData = (menu.kind === "point" ? POINT_TYPES : OBSTACLE_TYPES).find((item) => item.key === type); const object = { id: newId(menu.kind), type: typeData.key, icon: typeData.icon, name: typeData.label, description: "", location: menu.coordinate, created_at: new Date().toISOString(), updated_at: new Date().toISOString() }; setMenu({ ...menu, form: object }); }
-  function saveObject(form) { const object = { ...menu.form, ...form, updated_at: new Date().toISOString() }; if (draft) setDraft((value) => ({ ...value, [menu.kind === "point" ? "points" : "obstacles"]: [...value[menu.kind === "point" ? "points" : "obstacles"], object] })); else setApp((value) => ({ ...value, points: [...value.points, object] })); setMenu(null); setMode(draft ? MODES.EDIT_ROUTE : MODES.NORMAL); }
-  function toggleLayer(layer) { const enabled = !layers[layer.key]; try { toggleBnpbLayer(mapRef.current, layer, enabled, (message) => setNotice(message)); setLayers((value) => ({ ...value, [layer.key]: enabled })); } catch (error) { console.error("BNPB layer error", error); setNotice(`Layer ${layer.label} gagal diaktifkan: ${error.message}`); } }
-  const selected = app.routes.find((route) => route.id === selectedRouteId);
-  return <div className="app-shell"><Sidebar tab={tab} setTab={setTab} counts={{ routes: app.routes.length, points: app.points.length }} onLocation={() => setMode(MODES.PICK_LOCATION)} />
-    <main className="workspace"><div ref={containerRef} className="map" />{mapStatus !== "ready" && <div className="map-state">{mapStatus === "loading" ? "Memuat peta Indonesia…" : "Peta tidak tersedia. Periksa koneksi lalu muat ulang."}</div>}
-      <div className="map-toolbar"><button className="primary-button" onClick={beginRoute}>＋ Buat rute</button><button className="secondary-button" onClick={useGps}>⌖ GPS</button><button className="secondary-button" onClick={() => { setTab("layers"); }}>◫ Layer</button></div>
-      {notice && <div className="notice" role="status">{notice}<button onClick={() => setNotice("")}>×</button></div>}
-      {draft && <RouteEditor draft={draft} setDraft={setDraft} mode={mode} onDraw={() => setMode(draft.id ? MODES.EDIT_ROUTE : MODES.DRAW_ROUTE)} onPoint={() => setMode(MODES.PLACE_POINT)} onObstacle={() => setMode(MODES.PLACE_OBSTACLE)} onSave={saveRoute} onCancel={cancelRoute} />}
-      {menu && !menu.form && (menu.kind === "point" ? <PointMenu position={menu} types={POINT_TYPES} onSelect={chooseType} onCancel={() => { setMenu(null); setMode(draft ? MODES.EDIT_ROUTE : MODES.NORMAL); }} /> : <ObstacleMenu position={menu} types={OBSTACLE_TYPES} onSelect={chooseType} onCancel={() => setMenu(null)} />)}
-      {menu?.form && <ObjectForm item={menu.form} onSave={saveObject} onCancel={() => setMenu(null)} />}
-      <aside className="context-panel">{tab === "routes" && <RouteManager routes={app.routes} selectedRouteId={selectedRouteId} onCreate={beginRoute} onSelect={(route) => { setSelectedRouteId(route.id); flyToCoordinates(mapRef.current, route.geometry.coordinates[0], 14); }} onEdit={editRoute} onToggle={(route) => setApp((value) => ({ ...value, routes: value.routes.map((item) => item.id === route.id ? { ...item, visible: item.visible === false } : item) }))} onDelete={(route) => setApp((value) => ({ ...value, routes: value.routes.filter((item) => item.id !== route.id) }))} />}{tab === "points" && <PointList points={app.points} />}{tab === "bag" && <DisasterBag items={app.bagItems} setItems={(bagItems) => setApp((value) => ({ ...value, bagItems }))} />}{tab === "layers" && <HazardControl layers={BNPB_LAYERS} active={layers} onToggle={toggleLayer} />}{tab === "map" && <MapIntro mode={mode} location={app.location} selected={selected} />}</aside>
-    </main></div>;
+  function saveObject(form) {
+    const key = objectDraft.kind === "point" ? "points" : "obstacles";
+    const item = { ...objectDraft, ...form, id: objectDraft.id || newId(objectDraft.kind), visible: true, updatedAt: new Date().toISOString() };
+    setData((current) => ({ ...current, [key]: item.id === objectDraft.id && current[key].some((object) => object.id === item.id) ? current[key].map((object) => object.id === item.id ? item : object) : [...current[key], item] }));
+    setObjectDraft(null); setMode(MODES.browse); setMessage(`${objectDraft.kind === "point" ? "Titik" : "Hambatan"} tersimpan di peta.`);
+  }
+  function remove(key, id) { setData((current) => ({ ...current, [key]: current[key].filter((item) => item.id !== id) })); setSelected(null); }
+  function toggle(key, id) { setData((current) => ({ ...current, [key]: current[key].map((item) => item.id === id ? { ...item, visible: item.visible === false } : item) })); }
+  function cancel() { setRouteDraft(null); setObjectDraft(null); setMode(MODES.browse); }
+  const selectedObject = selected && data[selected.key].find((item) => item.id === selected.id);
+
+  return <div className="application">
+    <div ref={mapNode} className="map" />
+    <header className="topbar"><div className="wordmark"><span>⌁</span><b>mitigasi</b></div><nav aria-label="Navigasi utama"><button className={area === "mitigation" ? "active" : ""} onClick={() => { setArea("mitigation"); setTool("routes"); }}>Mitigasi</button><button className={area === "bag" ? "active" : ""} onClick={() => { cancel(); setArea("bag"); }}>Tas Bencana</button></nav><button className="layers-button" onClick={() => setArea(area === "layers" ? "map" : "layers")}>◫ Layer</button></header>
+    <div className="map-actions"><button className="round-button" onClick={() => mapRef.current?.zoomIn()} aria-label="Perbesar peta">+</button><button className="round-button" onClick={() => mapRef.current?.zoomOut()} aria-label="Perkecil peta">−</button></div>
+    <aside className="legend" aria-label="Legenda peta"><strong>Legenda</strong><span><i className="route-key" /> Rute</span><span><i className="point-key" /> Titik</span><span><i className="obstacle-key">⚠</i> Hambatan</span></aside>
+    {area === "mitigation" && <MitigationPanel tool={tool} setTool={setTool} data={data} mode={mode} routeDraft={routeDraft} onRoute={() => startRoute()} onPoint={() => { setMode(MODES.point); setObjectDraft(null); }} onObstacle={() => { setMode(MODES.obstacle); setObjectDraft(null); }} onEditRoute={startRoute} onEditObject={(key, item) => { setObjectDraft({ ...item, kind: key === "points" ? "point" : "obstacle" }); setMode(MODES.browse); }} onToggle={toggle} onRemove={remove} onSelect={(key, item) => { setSelected({ key, id: item.id }); flyToCoordinates(mapRef.current, item.coordinates || item.coordinate, 16); }} />}
+    {area === "bag" && <BagPanel data={data} setData={setData} />}
+    {area === "layers" && <section className="floating layers"><p className="kicker">TAMPILAN PETA</p><h2>Layer</h2>{Object.entries({ routes: "Rute", points: "Titik", obstacles: "Hambatan" }).map(([key, label]) => <label key={key}><input type="checkbox" checked={layers[key]} onChange={() => setLayers((current) => ({ ...current, [key]: !current[key] }))} />{label}</label>)}</section>}
+    {area === "map" && <section className="welcome"><p className="kicker">PETA MITIGASI PRIBADI</p><h1>Siap untuk<br />menghadapi hari.</h1><p>Tambahkan rute, titik penting, dan hambatan saat Anda membutuhkannya.</p><button onClick={() => { setArea("mitigation"); setTool("routes"); }}>Buka Mitigasi <span>→</span></button></section>}
+    {routeDraft && <RouteEditor draft={routeDraft} setDraft={setRouteDraft} onSave={saveRoute} onCancel={cancel} />}
+    {objectDraft && <ObjectForm draft={objectDraft} onSave={saveObject} onCancel={cancel} />}
+    {selectedObject && <section className="object-popover"><button onClick={() => setSelected(null)}>×</button><p className="kicker">{selected.key === "obstacles" ? "HAMBATAN" : "TITIK"}</p><b>{selectedObject.name}</b>{selectedObject.description && <p>{selectedObject.description}</p>}</section>}
+    {message && <div className="toast">{message}<button onClick={() => setMessage("")}>×</button></div>}
+  </div>;
 }
-function MapIntro({ mode, location, selected }) { return <section><span className="eyebrow">RUANG KERJA PETA</span><h1>MITIGASI</h1><p>{mode === MODES.PICK_LOCATION ? "Klik peta untuk menyimpan lokasi awal manual." : selected ? `Rute terpilih: ${selected.name}` : "Klik dua kali peta untuk menambah titik informasi. Semua rute digambar manual."}</p>{location && <small>Lokasi awal: {location.source === "gps" ? "GPS" : "manual"} · tersimpan</small>}<div className="legend"><b>Legenda</b><span>━━ Rute Anda</span><span>● Titik informasi</span><span>⚠ Hambatan</span></div></section>; }
-function PointList({ points }) { return <section><span className="eyebrow">TITIK SAYA</span><h2>Titik informasi</h2>{points.length ? points.map((point) => <article className="list-card" key={point.id}><b>{point.icon} {point.name}</b><small>{point.type}</small></article>) : <p>Belum ada titik. Double-click peta saat mode normal untuk membuatnya.</p>}</section>; }
-function ObjectForm({ item, onSave, onCancel }) { const [name, setName] = useState(item.name); const [description, setDescription] = useState(""); return <div className="modal"><section><span className="eyebrow">{item.icon} TITIK BARU</span><h2>Lengkapi informasi</h2><label>Nama<input autoFocus value={name} onChange={(e) => setName(e.target.value)} /></label><label>Deskripsi (opsional)<textarea value={description} onChange={(e) => setDescription(e.target.value)} /></label><div><button className="secondary-button" onClick={onCancel}>Batal</button><button className="primary-button" onClick={() => onSave({ name: name.trim() || item.name, description })}>Simpan</button></div></section></div>; }
+
+function MitigationPanel({ tool, setTool, data, mode, routeDraft, onRoute, onPoint, onObstacle, onEditRoute, onEditObject, onToggle, onRemove, onSelect }) {
+  const rows = tool === "routes" ? data.routes : data[tool]; const titles = { routes: "Rute", points: "Titik", obstacles: "Hambatan" };
+  const create = tool === "routes" ? onRoute : tool === "points" ? onPoint : onObstacle;
+  return <aside className="workspace-panel"><p className="kicker">RUANG KERJA</p><h2>Mitigasi</h2><div className="tool-tabs">{Object.entries(titles).map(([key, label]) => <button key={key} className={tool === key ? "active" : ""} onClick={() => setTool(key)}>{label}</button>)}</div><div className="panel-head"><div><h3>{titles[tool]}</h3><p>{tool === "routes" ? "Jalur evakuasi yang Anda gambar sendiri." : tool === "points" ? "Lokasi dan informasi penting." : "Hal yang memengaruhi pergerakan."}</p></div><button className="icon-add" onClick={create} aria-label={`Tambah ${titles[tool]}`}>+</button></div>{mode === "route" && routeDraft && <p className="drawing-hint">Klik peta untuk membuat jalur. Seret titik oranye untuk mengubahnya.</p>} {mode === "point" && <p className="drawing-hint">Klik sebuah lokasi pada peta untuk menambahkan titik.</p>} {mode === "obstacle" && <p className="drawing-hint">Klik lokasi hambatan pada peta.</p>}<div className="object-list">{rows.length ? rows.map((item) => <article key={item.id}><button className="object-name" onClick={() => onSelect(tool, item)}><i>{tool === "routes" ? "━" : tool === "points" ? "●" : "⚠"}</i><span>{item.name}<small>{item.description || (tool === "routes" ? `${item.coordinates.length} titik jalur` : item.category || "Tanpa keterangan")}</small></span></button><div><button onClick={() => onToggle(tool, item.id)}>{item.visible === false ? "Tampilkan" : "Sembunyikan"}</button><button onClick={() => tool === "routes" ? onEditRoute(item) : onEditObject(tool, item)}>Edit</button><button className="delete" onClick={() => onRemove(tool, item.id)}>Hapus</button></div></article>) : <div className="empty">Belum ada {titles[tool].toLowerCase()}. Tambahkan saat Anda siap.</div>}</div></aside>;
+}
+
+function RouteEditor({ draft, setDraft, onSave, onCancel }) { return <section className="editor"><p className="kicker">MENGGAMBAR RUTE</p><h2>{draft.id ? "Edit rute" : "Rute baru"}</h2><label>Nama rute<input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label><label>Deskripsi <textarea value={draft.description} placeholder="Contoh: menuju titik kumpul" onChange={(event) => setDraft({ ...draft, description: event.target.value })} /></label><p className="vertex-count"><b>{draft.coordinates.length}</b> titik jalur <button onClick={() => setDraft({ ...draft, coordinates: draft.coordinates.slice(0, -1) })} disabled={!draft.coordinates.length}>Hapus titik terakhir</button></p><div className="form-actions"><button onClick={onCancel}>Batal</button><button className="solid" onClick={onSave}>Simpan rute</button></div></section>; }
+function ObjectForm({ draft, onSave, onCancel }) { const [name, setName] = useState(draft.name); const [description, setDescription] = useState(draft.description || ""); const presets = draft.kind === "point" ? pointPresets : obstaclePresets; const label = draft.kind === "point" ? "Titik" : "Hambatan"; return <div className="scrim"><section className="object-form"><p className="kicker">{label.toUpperCase()}</p><h2>{draft.id ? `Edit ${label.toLowerCase()}` : `Tambah ${label.toLowerCase()}`}</h2><div className="presets">{presets.map((preset) => <button key={preset} className={name === preset ? "chosen" : ""} onClick={() => { setName(preset === "Lainnya" ? "" : preset); }}>{preset}</button>)}</div><label>Nama<input autoFocus value={name} placeholder={`Nama ${label.toLowerCase()}`} onChange={(event) => setName(event.target.value)} /></label><label>Keterangan <textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Opsional" /></label><div className="form-actions"><button onClick={onCancel}>Batal</button><button className="solid" onClick={() => onSave({ name: name.trim() || `Tanpa nama ${label.toLowerCase()}`, description, category: name })}>Simpan</button></div></section></div>; }
+function BagPanel({ data, setData }) { const [name, setName] = useState(""); const items = data.bag || []; return <aside className="bag-panel"><p className="kicker">PERLENGKAPAN PRIBADI</p><h2>Tas Bencana</h2><p>Siapkan yang penting sebelum keadaan darurat datang.</p><form onSubmit={(event) => { event.preventDefault(); if (!name.trim()) return; setData((current) => ({ ...current, bag: [...(current.bag || []), { id: newId("bag"), name: name.trim(), packed: false }] })); setName(""); }}><input value={name} onChange={(event) => setName(event.target.value)} placeholder="Tambah barang, mis. air minum" /><button className="solid">Tambah</button></form><div className="bag-list">{items.map((item) => <label key={item.id}><input type="checkbox" checked={item.packed} onChange={() => setData((current) => ({ ...current, bag: current.bag.map((bagItem) => bagItem.id === item.id ? { ...bagItem, packed: !bagItem.packed } : bagItem) }))} /><span>{item.name}</span><button onClick={() => setData((current) => ({ ...current, bag: current.bag.filter((bagItem) => bagItem.id !== item.id) }))}>×</button></label>)}</div></aside>; }
+
+function paint(map, data, draft, visibility) { const collection = { type: "FeatureCollection", features: [] }; if (visibility.routes) [...data.routes, ...(draft ? [draft] : [])].filter((item) => item.visible !== false && item.coordinates.length > 1).forEach((item) => collection.features.push({ type: "Feature", properties: { type: "route", draft: item === draft }, geometry: { type: "LineString", coordinates: item.coordinates } })); if (visibility.points) data.points.filter((item) => item.visible !== false).forEach((item) => collection.features.push({ type: "Feature", properties: { type: "point", name: item.name }, geometry: { type: "Point", coordinates: item.coordinate } })); if (visibility.obstacles) data.obstacles.filter((item) => item.visible !== false).forEach((item) => collection.features.push({ type: "Feature", properties: { type: "obstacle", name: item.name }, geometry: { type: "Point", coordinates: item.coordinate } })); const source = map.getSource("mitigation"); if (source) source.setData(collection); else { map.addSource("mitigation", { type: "geojson", data: collection }); map.addLayer({ id: "routes", type: "line", source: "mitigation", filter: ["==", ["get", "type"], "route"], paint: { "line-color": ["case", ["get", "draft"], "#f47b38", "#1c8775"], "line-width": 5, "line-opacity": .92 } }); map.addLayer({ id: "points", type: "circle", source: "mitigation", filter: ["==", ["get", "type"], "point"], paint: { "circle-radius": 8, "circle-color": "#1c8775", "circle-stroke-color": "#ffffff", "circle-stroke-width": 3 } }); map.addLayer({ id: "obstacles", type: "circle", source: "mitigation", filter: ["==", ["get", "type"], "obstacle"], paint: { "circle-radius": 9, "circle-color": "#e3663c", "circle-stroke-color": "#ffffff", "circle-stroke-width": 3 } }); } }
