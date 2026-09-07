@@ -1,4 +1,4 @@
-import maplibregl from "maplibre-gl";
+import * as maplibregl from "maplibre-gl";
 export function clearMarkers(markers) { markers.forEach((marker) => marker.remove()); markers.length = 0; }
 function marker(map, object, obstacle = false) { const el = document.createElement("button"); el.className = `map-marker ${obstacle ? "obstacle" : ""}`; el.textContent = object.icon || "●"; el.title = object.name; return new maplibregl.Marker({ element: el }).setLngLat(object.location).addTo(map); }
 export function renderMarkers(map, points, routes, draft) { const markers = points.map((point) => marker(map, point)); [...routes, ...(draft ? [draft] : [])].forEach((route) => { (route.points || []).forEach((point) => markers.push(marker(map, point))); (route.obstacles || []).forEach((item) => markers.push(marker(map, item, true))); }); return markers; }
