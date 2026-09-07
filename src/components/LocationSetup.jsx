@@ -1,0 +1,3 @@
+export default function LocationSetup({ onGPS, onManual, existing, onClose }) {
+  return <div className="modal-backdrop"><section className="setup-card"><div className="setup-icon">⌖</div><span className="eyebrow">LOKASI ANDA</span><h2>{existing ? "Ubah lokasi" : "Tentukan lokasi Anda"}</h2><p>Lokasi ini menjadi titik fokus saat peta dibuka. Tidak perlu memilih kota atau kabupaten.</p><div className="setup-actions"><button className="primary-button large" onClick={onGPS}>Gunakan lokasi HP</button><button className="secondary-button large" onClick={onManual}>Pilih manual di peta</button></div>{onClose && <button className="text-button" onClick={onClose}>Nanti saja</button>}</section></div>;
+}
